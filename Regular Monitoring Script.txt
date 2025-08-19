@@ -1,0 +1,99 @@
+select sp.spid, DB_NAME(sp.dbid) as dbname,lastwaittype,cmd,text,p.required_memory_kb,p.granted_memory_kb,p.used_memory_kb,p.query_cost,sp.cpu,sp.physical_io,* from sys.sysprocesses sp
+cross apply sys.dm_exec_sql_text(sp.sql_handle) sh left join sys.dm_exec_query_memory_grants p
+on sp.spid=p.session_id where status<>'sleeping' and sp.spid<>@@SPID
+order by sp.login_time asc
+
+select * from sys.dm_server_services
+select name,state_desc,* from sys.databases where state_desc<>'online'
+
+--------------------------
+SELECT
+    sdb.name as DbName,
+    sdb.log_reuse_wait, sdb.log_reuse_wait_desc,
+    log_reuse_wait_explanation = case
+        when log_reuse_wait = 1 then 'No checkpoint has occurred since the last log truncation, or the head of the log has not yet moved beyond'
+        when log_reuse_wait = 2 then 'A log backup is required before the transaction log can be truncated.'
+        when log_reuse_wait = 3 then 'A data backup or a restore is in progress (all recovery models). Please wait or cancel backup'
+        when log_reuse_wait = 4 then 'A long-running active transaction or a defferred transaction is keeping log from being truncated. You can attempt a log backup to free space or complete/rollback long transaction'
+        when log_reuse_wait = 5 then 'Database mirroring is paused, or under high-performance mode, the mirror database is significantly behind the principal database. (Full recovery model only)'       
+        when log_reuse_wait = 6 then 'During transactional replications, transactions relevant to the publications are still undelivered to the distribution database. (Full recovery model only)'       
+        when log_reuse_wait = 7 then 'A database snapshot is being created. This is a routine, and typically brief, cause of delayed log truncation.'
+        when log_reuse_wait = 8 then 'A transaction log scan is occurring. This is a routine, and typically a brief cause of delayed log truncation.'
+        when log_reuse_wait = 9 then 'A secondary replica of an availability group is applying transaction log records of this database to a corresponding secondary database. (Full recovery model)'
+        when log_reuse_wait = 13 then 'If a database is configured to use indirect checkpoints, the oldest page on the database might be older than the checkpoint log sequence number (LSN)'
+        when log_reuse_wait = 16 then 'An In-Memory OLTP checkpoint has not occurred since the last log truncation, or the head of the log has not yet moved beyond a VLF)'
+    else 'None' end,
+    sdb.database_id,
+    sdb.recovery_model_desc,
+    ls.total_log_size_mb,
+    ls.active_log_size_mb,
+    ls.total_log_size_mb - ls.active_log_size_mb as Free_Space_mb
+FROM sys.databases sdb cross apply sys.dm_db_log_stats(database_id) ls
+
+------------------------------------------------------------
+select name,state_desc,* from sys.databases where name='tempdb'
+sp_who2 active
+sp_who4 active
+diskspace
+
+select * from sys.sysaltfiles
+
+xp_fixeddrives
+
+select sp.spid, DB_NAME(sp.dbid) as dbname,blocked,cmd,text,login_time,loginame, program_name,status, sp.cpu,* from sys.sysprocesses sp
+cross apply sys.dm_exec_sql_text(sp.sql_handle) sh
+--where lastwaittype <> 'MISCELLANEOUS'
+where status<>'sleeping'
+order by sp.login_time asc
+
+
+select * from sys.databases
+
+--Check log greater than 1gb
+select b.name,(a.size*8)/(1024*1024)as log from sys.sysaltfiles a,sys.sysdatabases b where a.dbid = b.dbid and
+a.filename like '%.ldf'and (a.size*8)/(1024*1024)>0.9
+
+dbcc sqlperf(logspace)
+
+--dbcc shrinkfile(2)
+select log_reuse_wait_desc, *from sys.databases
+
+sp_helpdb
+
+xp_readerrorlog 0,1, N'BLOCKERS lock request was issued on database_id',NULL,'2019-11-12 00:00:00.000','2019-11-13 19:44:40.940',null
+xp_readerrorlog 0,1, N'Process ID',NULL,'2019-11-12 00:00:00.000','2019-11-13 19:44:40.940',null
+xp_readerrorlog 0, 1, N'Abort',NULL,'2019-11-12 00:00:00.000','2019-11-13 19:44:40.940',null
+--xp_readerrorlog 0,1, N'failed',NULL,'2019-11-12 00:00:00.000','2019-11-13 19:44:40.940',null
+
+EXEC master.dbo.xp_readerrorlog 0, 1, N'', N'backed', '20171105', '20171106', N'desc' 
+EXEC master.dbo.xp_readerrorlog 0, 1, N'', N'BACKUP failed', '20171105', '20171106', N'desc' 
+EXEC master.dbo.xp_readerrorlog 0, 1, N'', N'deadlock', '20171105', '20171106', N'desc' 
+EXEC master.dbo.xp_readerrorlog 0, 1, N'', N'error', '20171105', '20171106', N'desc' 
+EXEC master.dbo.xp_readerrorlog 0, 1, N'', N'I/O', '20171105', '20171106', N'desc' 
+
+dbcc sqlperf(logspace)
+select state_desc , * from sys.databases
+select percent_complete , * from sys.dm_exec_requests where percent_complete<>0
+sp_readerrorlog
+dbcc inputbuffer(420)
+
+
+SELECT Name,fileid, Filename,CONVERT(Decimal(15,2),ROUND(a.Size/128.000,2)) [Currently Allocated Space (MB)],
+CONVERT(Decimal(15,2),ROUND(FILEPROPERTY(a.Name,'SpaceUsed')/128.000,2)) AS [Space Used (MB)],
+CONVERT(Decimal(15,2),ROUND((a.Size-FILEPROPERTY(a.Name,'SpaceUsed'))/128.000,2)) AS [Available Space (MB)] FROM dbo.sysfiles a (NOLOCK)
+
+sp_repldone null,null,0,0,1
+select A.*,B.name from sys.sysaltfiles a,sys.sysdatabases b where a.dbid = b.dbid and a.filename like 'F:%'
+order by size desc
+select name,state_desc,log_reuse_wait,log_reuse_wait_desc,* from sys.databases where log_reuse_wait_desc<>'nothing'
+
+select login_name, COUNT(session_id) as cnt from sys.dm_exec_sessions--where login_name='mobilebi' group by login_name order by COUNT(session_id) desc
+
+----check backuptime
+select database_name,backup_start_date,type from msdb..backupset
+where backup_start_date>=dateadd(dd,-1,getdate()) and type<>'L'
+order by database_name asc
+
+--to check failed jobs--change date
+select distinct b.name,a.run_date from msdb..sysjobhistory a ,msdb..sysjobs b where
+a.job_id=b.job_id and run_status=0 and a.run_date>=20181013

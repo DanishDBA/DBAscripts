@@ -1,0 +1,223 @@
+
+--To find statistics for a particular table
+
+SELECT name AS index_name,
+STATS_DATE(OBJECT_ID, index_id) AS StatsUpdated
+FROM sys.indexes
+WHERE OBJECT_ID = OBJECT_ID('[MFILE].NPA_Writeoff')
+GO
+
+
+SP_HELPINDEX 'ABFL_agg.RPT.DetailedOverDue_NPA'
+
+
+sp_spaceused '[ABFL_ODS].[MFILE].[Barnch_Master]'
+
+
+--Manually updating statistics without full scan
+
+
+UPDATE STATISTICS [ABFL_ODS].[MFILE].[DIGITAL_RPT_BOOKING_REPORT]
+
+
+
+------Script out all the tables to update stats with fullscan-------------------------------------------------------------------
+
+--Change result set to text then execute the query
+
+SELECT 'UPDATE STATISTICS ' +
+                      quotename(s.name) + '.' + quotename(o.name) +
+                      ' WITH FULLSCAN; ' + char(13) + char(10) + 'GO' AS [Script()]
+               FROM   sys.objects o
+               JOIN   sys.schemas s ON o.schema_id = s.schema_id
+               WHERE  o.type = 'U'
+
+-------------------------Update statistics job---------------------------------------------------------
+
+--Just execute the below query it will update all table statistics one by one------------------------
+
+
+DECLARE @Query VARCHAR(MAX) 
+SELECT @Query = COALESCE(@Query + '
+', '') + X.NAME 
+FROM (
+Select 'USE ['+name +'] 
+   
+exec sp_MSforeachtable
+''update statistics ? WITH FULLSCAN;''
+
+' NAME
+from sys.databases
+where database_id>4
+and state_desc='ONLINE'
+and name <>'SnapshotDB'
+) X
+Exec  (@Query)
+
+
+
+--to find the dependency of the table
+
+
+SELECT SCHEMA_NAME(schema_id) AS [SchemaName],
+[Tables].name AS [TableName],
+SUM([Partitions].[rows]) AS [TotalRowCount]
+FROM sys.tables AS [Tables]
+JOIN sys.partitions AS [Partitions]
+ON [Tables].[object_id] = [Partitions].[object_id]
+AND [Partitions].index_id IN ( 0, 1 )
+ WHERE [Tables].name in (
+ SELECT 
+NAME 
+FROM SYSOBJECTS 
+WHERE TYPE<>'P' and
+ID IN (   SELECT SD.DEPID 
+                 FROM SYSOBJECTS SO, 
+                SYSDEPENDS SD
+                WHERE SO.NAME in ( 'USP_UpdateGroupEndorsement')
+                AND SD.ID = SO.ID	
+            )
+) --N'name of the table'
+GROUP BY SCHEMA_NAME(schema_id), [Tables].name
+order by 3 desc
+
+
+----TO find the statistics & index & sampled percentage should be 100 in output of below query 
+
+SELECT
+
+SCHEMA_NAME(o.schema_id) + '.' + o.name AS object_name, p.stats_id,
+
+s.name AS index_or_stats_name,
+
+CASE
+
+              WHEN s.auto_created = 1 THEN 'Auto'
+
+              WHEN s.user_created = 1 THEN 'User'
+
+              ELSE 'Index'
+
+END AS stat_source,
+
+p.[rows] AS total_rows,
+
+p.[rows] - p.unfiltered_rows as filtered_rows,
+
+s.filter_definition,
+
+p.rows_sampled AS sampled_rows,
+
+(CAST(p.rows_sampled as float)/ p.rows) * 100.0 AS [sampled_percent],
+
+CAST(p.last_updated AS DATETIME2(0)) AS last_updated,
+
+p.modification_counter AS num_modifications,
+
+p.steps AS hg_steps,
+
+--p.persisted_sample_percent AS persisted_sample,
+
+no_recompute,
+
+s.is_temporary, s.is_incremental
+
+FROM sys.stats AS s
+
+     INNER JOIN sys.objects AS o ON s.object_id = o.object_id
+
+     CROSS APPLY sys.dm_db_stats_properties(o.object_id, s.stats_id) AS p
+
+WHERE o.is_ms_shipped = 0
+
+--AND (CAST(p.rows_sampled as float)/ p.rows) * 100.0 <= 5.00
+
+--AND p.last_updated >= '2/6/2022'
+
+ORDER BY p.rows desc
+
+
+
+---to make it sampled percentage 100 percent used below update statistic command with fullscan 
+
+UPDATE STATISTICS dbo.tblClient WITH FULLSCAN
+
+After completion see the sampled percentage using above query it should be 100
+
+
+
+-------------------------------------check fragmentation for rebuild & reorganize-------------------------------
+
+-- Fragmentation Of all table index
+
+SELECT DB_NAME(PS.database_id) AS dbName,
+S.name  AS SchemaName,
+SUM(RW.user_seeks + RW.user_scans + RW.user_lookups)Reads , SUM(RW.user_updates)Writes,
+O.name AS TableName,
+b.name,
+ps.avg_fragmentation_in_percent,
+ps.page_count
+FROM sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, Null) AS ps
+INNER JOIN sys.dm_db_index_usage_stats  AS RW ON ps.OBJECT_ID = RW.OBJECT_ID AND ps.index_id = RW.index_id
+INNER JOIN sys.indexes AS b ON ps.OBJECT_ID = b.OBJECT_ID AND ps.index_id = b.index_id
+INNER JOIN sys.objects O  ON PS.object_id = O.object_id
+INNER JOIN sys.schemas S ON S.schema_id = O.schema_id
+WHERE  
+--ps.avg_fragmentation_in_percent >= 10 -- Indexes having Fragmentation >=20
+--AND 
+--PS.index_type_desc IN ('CLUSTERED INDEX','NONCLUSTERED INDEX') AND -- Only get clustered and nonclustered indexes
+b.is_hypothetical = 0 -- Only real indexes
+AND O.type_desc = 'USER_TABLE' -- Restrict to user tables
+--AND PS.page_count > 500 --- ignore tables less tha 64K
+--AND PS.database_id = 6
+group by
+PS.database_id,S.name  ,O.name,b.name,ps.avg_fragmentation_in_percent,ps.page_count
+ORDER BY ps.avg_fragmentation_in_percent DESC
+
+
+--Rebuild script 
+
+ALTER INDEX [INDEX_NAME] ON [TABLE_NAME]
+ REBUILD PARTITION = ALL WITH ( PAD_INDEX  = OFF, 
+STATISTICS_NORECOMPUTE  = OFF, 
+ ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON, 
+ONLINE = OFF, SORT_IN_TEMPDB = ON )
+GO
+
+
+-----to check fragentation of a particular table------------------------------------
+
+USE AdventureWorks2022;
+GO
+DBCC SHOWCONTIG ('[sk].[LoginTokens]','IX_sk_LoginTokens_UserId_Last');
+GO
+
+------another query to check fregmentaion of a particular table----------------------
+
+SELECT DB_NAME(PS.database_id) AS dbName,
+S.name  AS SchemaName,
+SUM(RW.user_seeks + RW.user_scans + RW.user_lookups)Reads , SUM(RW.user_updates)Writes,
+O.name AS TableName,
+b.name,
+ps.avg_fragmentation_in_percent,
+ps.page_count
+FROM sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, NULL) AS ps
+INNER JOIN sys.dm_db_index_usage_stats  AS RW ON ps.OBJECT_ID = RW.OBJECT_ID AND ps.index_id = RW.index_id
+INNER JOIN sys.indexes AS b ON ps.OBJECT_ID = b.OBJECT_ID AND ps.index_id = b.index_id
+INNER JOIN sys.objects O  ON PS.object_id = O.object_id
+INNER JOIN sys.schemas S ON S.schema_id = O.schema_id
+WHERE  s.name+'.'+o.name = 'sk.LoginTokens' ------------------------------------------------------------------------------Metntion table name
+--ps.avg_fragmentation_in_percent >= 10 -- Indexes having Fragmentation >=20
+--AND 
+--PS.index_type_desc IN ('CLUSTERED INDEX','NONCLUSTERED INDEX') -- Only get clustered and nonclustered indexes
+AND b.is_hypothetical = 0 -- Only real indexes
+AND O.type_desc = 'USER_TABLE' -- Restrict to user tables
+--AND PS.page_count > 1000 --- ignore tables less tha 64K
+--AND PS.database_id = 6
+group by
+PS.database_id,S.name  ,O.name,b.name,ps.avg_fragmentation_in_percent,ps.page_count
+ORDER BY ps.avg_fragmentation_in_percent DESC
+
+
+--sp_updatestats
+	

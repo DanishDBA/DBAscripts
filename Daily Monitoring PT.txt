@@ -1,0 +1,478 @@
+--Login Failed report
+exec sp_readerrorlog ' ','1','' ,'Reason'
+
+--Active session
+select sp.spid, DB_NAME(sp.dbid) as dbname,lastwaittype,status,blocked,convert(date,last_batch),last_batch,cmd,text,program_name,p.query_cost,
+p.required_memory_kb,p.granted_memory_kb,p.used_memory_kb,sp.cpu,sp.physical_io,* from sys.sysprocesses sp
+cross apply sys.dm_exec_sql_text(sp.sql_handle) sh
+left join sys.dm_exec_query_memory_grants p
+cross apply sys.dm_exec_query_plan(p.PLAN_HANDLE) 
+on sp.spid=p.session_id
+where status<>'sleeping' and sp.spid<>@@SPID
+--AND CMD  = 'SELECT ' 
+--and convert(date,last_batch) =  '2019-04-19'
+order by sp.last_batch asc
+
+DBCC INPUTBUFFER (68) 
+
+
+
+
+SP_CONFIGURE
+
+sp_who3 
+
+Leadblocker
+
+SELECT COUNT(*) FROM SYS.STATS
+
+--Max Query wait types 
+SELECT *
+FROM sys.dm_os_wait_stats WHERE waiting_tasks_count > 0
+ORDER BY wait_time_ms DESC
+	
+--Retrive Execution plan with using plan handle
+SELECT * FROM sys.dm_exec_query_plan(0x05002600C4859E4E501FBB2C1C00000001000000000000000000000000000000000000000000000000000000)
+
+SELECT
+[qs].[last_execution_time],
+[qs].[execution_count],
+[qs].[total_logical_reads]/[qs].[execution_count] [AvgLogicalReads],
+[qs].[max_logical_reads],
+[qs].[plan_handle],
+[p].[query_plan]
+FROM sys.dm_exec_query_stats [qs]
+CROSS APPLY sys.dm_exec_sql_text([qs].sql_handle) [t]
+CROSS APPLY sys.dm_exec_query_plan([qs].[plan_handle]) [p]
+--WHERE [t].text LIKE '%usp_GetCustomerInfo%';
+
+--All blockages on server
+SELECT * FROM SYS.sysprocesses WHERE blocked <> 0
+
+--Active Session with using SPID
+SP_WHO2 active
+sp_who4 active
+
+--Server Details
+SELECT @@SERVERNAME
+SELECT @@SERVICENAME
+SELECT @@VERSION
+
+--Sleeping session
+select sp.spid, DB_NAME(sp.dbid) as dbname,lastwaittype,status,blocked,convert(date,last_batch),last_batch,cmd,text,program_name,p.query_cost,
+p.required_memory_kb,p.granted_memory_kb,p.used_memory_kb,sp.cpu,sp.physical_io,* from sys.sysprocesses sp
+cross apply sys.dm_exec_sql_text(sp.sql_handle) sh
+left join sys.dm_exec_query_memory_grants p
+cross apply sys.dm_exec_query_plan(p.PLAN_HANDLE) 
+on sp.spid=p.session_id
+where status='sleeping' and sp.spid<>@@SPID
+and convert(date,last_batch) =  '2019-10-15'
+order by sp.login_time asc 
+--Wait type count 
+SELECT COUNT(LASTWAITTYPE) COUNT,LASTWAITTYPE FROM SYS.SYSPROCESSES GROUP BY LASTWAITTYPE ORDER BY COUNT DESC
+
+--Chceck SMS status manually
+select  COUNT(*) from smsdb.dbo.MIDE_PUSH_MESSAGE_LOG where SUCCESSSTATUS=0 and  ATTEMPTCOUNT=0
+
+--dbo.dcsp_Extract_PDC_User_Logins
+
+--- CPU CONSUMING SESSION WITH EXECUTION PLAN
+SELECT
+    [er].[session_id],
+    [es].[program_name],
+    [est].text,
+    [er].[database_id],
+    [eqp].[query_plan],
+    [er].[cpu_time]
+FROM sys.dm_exec_requests [er]
+INNER JOIN sys.dm_exec_sessions [es] ON
+    [es].[session_id] = [er].[session_id]
+OUTER APPLY sys.dm_exec_sql_text ([er].[sql_handle]) [est]
+OUTER APPLY sys.dm_exec_query_plan ([er].[plan_handle]) [eqp]
+WHERE
+    [es].[is_user_process] = 1
+    AND [er].[last_Wait_type] = N'SOS_SCHEDULER_YIELD'
+ORDER BY
+    [er].[session_id];
+GO
+
+--SCHEDULERS
+SELECT scheduler_id, cpu_id, status, is_online FROM sys.dm_os_schedulers 
+GO
+
+--check DB status
+select name,state_desc from sys.databases where state_desc<>'online'
+
+--Server/Instance restart timing
+select name,create_date from sys.databases where name='tempdb'
+
+select * from sys.dm_os_sys_info
+
+--Disk space on server
+ds
+--SYS.DM_EXEC_REQUESTS  
+select percent_complete , * from sys.dm_exec_requests where percent_complete<>0
+qc
+--Disk space on server
+xp_fixeddrives
+
+--MDF and LDF size of database
+SELECT    Name,fileid, Filename,CONVERT(Decimal(15,2),ROUND(a.Size/128.000,2)) [Currently Allocated Space (MB)],
+CONVERT(Decimal(15,2),ROUND(FILEPROPERTY(a.Name,'SpaceUsed')/128.000,2)) AS [Space Used (MB)],
+CONVERT(Decimal(15,2),ROUND((a.Size-FILEPROPERTY(a.Name,'SpaceUsed'))/128.000,2)) AS [Available Space (MB)]
+FROM dbo.sysfiles a (NOLOCK)
+
+--Check log file size > 1 GB
+select b.name,(a.size*8)/(1024*1024)as log from sys.sysaltfiles a,sys.sysdatabases b where a.dbid = b.dbid and
+a.filename like '%.ldf'and (a.size*8)/(1024*1024)>0.9
+
+--Free space
+SELECT  volume_mount_point ,
+        CAST(total_bytes / 1024 / 1024 / 1024 AS NUMERIC(20, 2)) [Used Space] ,
+        CAST(available_bytes / 1024 / 1024 / 1024 AS NUMERIC(20, 2)) [Free Space] ,
+        CAST(CAST(available_bytes * 100 / CAST(total_bytes AS NUMERIC(20, 2)) AS NUMERIC(5,
+                                                              2)) AS VARCHAR(50))
+        + ' %' AS [Percentage Free]
+FROM    sys.master_files AS f
+        CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id) b
+GROUP BY b.volume_mount_point ,
+        total_bytes ,
+        available_bytes
+ORDER BY volume_mount_point;
+GO
+
+--Log space
+dbcc sqlperf(logspace)
+
+--Database information
+sp_helpdb
+exec sp_readerrorlog ' ','1',' ' ,'backed'
+exec sp_readerrorlog ' ','1',' ' ,'BACKUP failed'
+exec sp_readerrorlog ' ','1',' ' ,'deadlock'
+exec sp_readerrorlog ' ','1',' ' ,'error'
+exec sp_readerrorlog ' ','1',' ' ,'I/O'
+
+--Query plan cache
+SELECT UseCounts, Cacheobjtype, Objtype, TEXT, query_plan
+FROM sys.dm_exec_cached_plans 
+CROSS APPLY sys.dm_exec_sql_text(plan_handle)
+CROSS APPLY sys.dm_exec_query_plan(plan_handle)
+
+--Staticstic count
+SELECT COUNT(*) FROM SYS.STATS 
+
+--Staticstic checks
+SELECT 
+OBJECT_NAME (SP.object_id) 'TABLE'
+,S.NAME AS 'STATISTIC ID'
+,SP.last_updated AS 'last updated'
+,SP.rows
+,SP.rows_sampled
+,SP.unfiltered_rows
+,SP.modification_counter AS 'modification'
+FROM SYS.STATS S
+OUTER APPLY SYS.dm_db_stats_properties (S.object_id,S.stats_id) SP
+WHERE  OBJECT_NAME (SP.object_id) NOT LIKE '%SYS%' 
+ORDER BY SP.last_updated DESC
+--S.object_iD = OBJECT_ID ()
+
+---
+SELECT sp.stats_id, 
+       name, 
+       filter_definition, 
+       last_updated, 
+       rows, 
+       rows_sampled, 
+       steps, 
+       unfiltered_rows, 
+       modification_counter
+FROM sys.stats AS stat
+     CROSS APPLY sys.dm_db_stats_properties(stat.object_id, stat.stats_id) AS sp
+	 order by last_updated desc
+
+--Memory consumptionn by Query 
+SELECT * FROM SYS.DM_EXEC_QUERY_MEMORY_GRANTS ORDER BY QUERY_COST DESC
+
+
+SELECT  CAST(physical_memory_in_use_kb/ (1024.0 * 1024.0) AS DECIMAL(20, 2)) AS MemoryUsedBySqlServerGB FROM    sys.dm_os_process_memory;
+
+
+--Database States
+select state_desc , * from sys.databases
+
+--read error log
+sp_readerrorlog 
+
+--Running Query from SPID
+dbcc inputbuffer(793)
+
+--
+sp_repldone null,null,0,0,1
+
+--Database file path disk wise
+select A.*,B.name from sys.sysaltfiles a,sys.sysdatabases b where a.dbid = b.dbid 
+and a.filename like 'j:%'
+order by size desc
+
+--Log Reuse wait description 
+select name,state_desc,log_reuse_wait,log_reuse_wait_desc,* from sys.databases where 
+log_reuse_wait_desc<>'nothing'
+
+--Login count
+select login_name, COUNT(session_id) as cnt from sys.dm_exec_sessions
+--where login_name='mobilebi'
+group by login_name
+order by COUNT(session_id) desc
+
+--Get backup details
+select database_name,backup_start_date,type from msdb..backupset
+where backup_start_date>=dateadd(dd,-1,getdate()) and type<>'L'
+order by database_name asc
+
+--to check failed jobs--change date
+select distinct b.name,a.run_date from msdb..sysjobhistory a ,msdb..sysjobs b where
+a.job_id=b.job_id and run_status=0
+and a.run_date>=20190927
+
+--Syncing status
+select secondary_database as DBNAME, primary_server as [PRIMARY SERVER],
+last_restored_date as [LAST RESTORE DATE],
+DATEDIFF(minute, last_restored_date, GETDATE()) AS LATENCY,
+case 
+when  
+DATEDIFF(minute, last_restored_date, GETDATE()) < 60
+then 'SYNCHRONIZED' 
+else 'UNSYNCHRONIZED' 
+end  
+as [LOGSHIPPING STATUS] 
+from msdb..log_shipping_monitor_secondary
+
+
+--Sleeping session by database
+SELECT * FROM SYS.SYSPROCESSES WHERE DBID = DB_ID ('NB_MIS') AND STATUS = 'SLEEPING'
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+select cacheobjtype, objtype, COUNT (*)
+from sys.dm_exec_cached_plans
+group by cacheobjtype, objtype
+order by cacheobjtype, objtype
+
+
+select p.refcounts, p.usecounts, p.plan_handle, s.text
+from sys.dm_exec_cached_plans as p
+    cross apply sys.dm_exec_sql_text (p.plan_handle) as s
+where p.cacheobjtype = 'compiled plan'
+and p.objtype = 'adhoc'
+order by p.usecounts desc
+
+DBCC SQLPERF(WAITSTATS)
+
+-- Perfromance Counter
+SELECT 1 AS COLLECTION_ID,GETDATE() as collection_time,
+RTRIM([OBJECT_NAME]) + N':' + RTRIM([COUNTER_NAME]) + N':' + RTRIM([INSTANCE_NAME]) AS COUNTER_NAME, 
+[CNTR_TYPE],
+[CNTR_VALUE]
+FROM SYS.dm_os_performance_counters 
+WHERE [counter_name] IN (
+'PAGE LIFE EXPECTANCY',
+'LAZY WRITES/SEC',
+'PAGE READS/SEC',
+'PAGE WRITES/SEC',
+'FREE PAGES',
+'FREE LIST STALLS/SEC',
+'USER CONNECTIONS',
+'LOCK WAITS/SEC',
+'NUMBER OF DEADLOCKS/SEC',
+'TRANSACTIONS/SEC',
+'FORWARDED RECORDS/SEC',
+'INDEX SEARCHES/SEC',
+'FULL SCANS/SEC',
+'BATCH REQUESTS/SEC',
+'SQL COMPILATIONS/SEC',
+'SQL RE-COMPILATIONS/SEC',
+'TOTAL SERVER MEMORY(KB)',
+'LATCH WAITS/SEC'
+)
+ORDER BY [OBJECT_NAME] + N':' + [counter_name] + N':' + [instance_name];
+
+
+--CPU  MONITOR
+SELECT 
+--AVG(current_tasks_count) AS [AVG_TASK_COUNT],
+--AVG(RUNNABLE_TASKS_COUNT) AS [AVG_RUNNABLE_TASKS],
+current_tasks_count,
+RUNNABLE_TASKS_COUNT,
+WORK_QUEUE_COUNT,
+PENDING_DISK_IO_COUNT
+FROM SYS.dm_os_schedulers
+
+----Tempdb usages - User tables -- Internal tables/Work tables
+
+SELECT GETDATE() AS RUNTIME,SUM(USER_OBJECT_RESERVED_PAGE_COUNT)* 8 AS USR_OBJ_KB,
+SUM(INTERNAL_OBJECT_RESERVED_PAGE_COUNT)*8 AS INTERNAL_OBJ_KB,
+SUM(VERSION_STORE_RESERVED_PAGE_COUNT)*8 AS VERSION_STORE_KB,
+SUM(unallocated_extent_page_count)*8 AS FREESPACE_KB,
+SUM(mixed_extent_page_count)*8 AS MIXEDEXTENT_KB
+FROM SYS.dm_db_file_space_usage 
+
+
+SELECT tb.name AS [Temporary table name],
+stt.row_count AS [Number of rows], 
+stt.used_page_count * 8 AS [Used space (KB)], 
+stt.reserved_page_count * 8 AS [Reserved space (KB)] FROM tempdb.sys.partitions AS prt 
+INNER JOIN tempdb.sys.dm_db_partition_stats AS stt 
+ON prt.partition_id = stt.partition_id 
+AND prt.partition_number = stt.partition_number 
+INNER JOIN tempdb.sys.tables AS tb 
+ON stt.object_id = tb.object_id 
+ORDER BY tb.name
+
+SELECT NAME 'LOGICAL_NAME',SIZE/128.0 AS [TOTAL SIZE IN MB],SIZE/128.0 - CAST(FILEPROPERTY(NAME,'SPACEUSED')AS INT) / 128.0 AS [AVAILIBLE SPACE IN MB] FROM SYS.DATABASE_FILES
+
+-------------------
+
+SELECT name AS 'Pool Name', 
+cache_memory_kb/1024.0 AS [cache_memory_MB], 
+used_memory_kb/1024.0 AS [used_memory_MB] 
+FROM sys.dm_resource_governor_resource_pools;
+
+
+SELECT TOP 1 type, name, pages_kb/1024/1024 as pages_GB FROM sys.dm_os_memory_clerks ORDER BY pages_kb  desc
+
+SELECT  
+    transaction_sequence_num,  
+    version_sequence_num,  
+    database_id rowset_id,  
+    status,  
+    min_length_in_bytes,  
+    record_length_first_part_in_bytes,  
+    record_image_first_part,  
+    record_length_second_part_in_bytes,  
+    record_image_second_part  
+  FROM sys.dm_tran_version_store;  
+
+
+SELECT COUNT(1) AS VerRcrds,
+	 SUM(record_length_first_part_in_bytes + record_length_second_part_in_bytes)/1024 AS VerSizeKB
+FROM sys.dm_tran_version_store
+
+
+SELECT * FROM dm_io_virtual_file_stats(NULL,NULL)
+
+
+SELECT
+physical_memory_in_use_kb /1024 'physical_memory_in_use_kb'
+,large_page_allocations_kb /1024 'large_page_allocations_kb'
+,locked_page_allocations_kb /1024 'locked_page_allocations_kb'
+,total_virtual_address_space_kb /1024 'total_virtual_address_space_kb'
+,virtual_address_space_reserved_kb /1024 'virtual_address_space_reserved_kb'
+,virtual_address_space_committed_kb /1024 'virtual_address_space_committed_kb'
+,virtual_address_space_available_kb /1024 'virtual_address_space_available_kb'
+,available_commit_limit_kb/1024 'available_commit_limit_kb'
+,memory_utilization_percentage 'memory_utilization_percentage'
+FROM SYS.dm_os_process_memory
+
+SELECT physical_memory_in_use_kb AS Actual_Usage,
+	large_page_allocations_kb AS large_Pages,
+	locked_page_allocations_kb AS locked_Pages,
+	virtual_address_space_committed_kb AS VAS_Committed,
+	large_page_allocations_kb + locked_page_allocations_kb + 427000,
+	memory_utilization_percentage
+FROM sys.dm_os_process_memory
+
+
+SELECT physical_memory_in_use_kb/1024 AS [SQL Server Memory Usage (MB)],
+       large_page_allocations_kb, locked_page_allocations_kb, page_fault_count,
+          memory_utilization_percentage, available_commit_limit_kb,
+          process_physical_memory_low, process_virtual_memory_low
+FROM sys.dm_os_process_memory WITH (NOLOCK) OPTION (RECOMPILE);
+
+
+SELECT DB_NAME(PA.DATABASE_ID) AS [DATABASE_NAME],(SUM(QS.total_worker_time/QS.execution_count)/1000)/60 AS AVG_COUNT_COST_MIN
+FROM SYS.dm_exec_query_stats QS 
+CROSS APPLY  
+(SELECT CONVERT(INT,VALUE) AS [DATABASE_ID] FROM 
+SYS.dm_exec_plan_attributes (QS.plan_handle) 
+WHERE attribute = N'DBID')PA
+GROUP BY [DATABASE_ID]
+ORDER BY AVG_COUNT_COST_MIN DESC
+
+WITH DB_CPU_Stats
+AS
+(SELECT pa.DatabaseID, DB_Name(pa.DatabaseID) AS [Database Name], SUM(qs.total_worker_time/1000/60) AS [CPU_Time_Ms]
+FROM sys.dm_exec_query_stats AS qs WITH (NOLOCK)
+CROSS APPLY (SELECT CONVERT(int, value) AS [DatabaseID]
+FROM sys.dm_exec_plan_attributes(qs.plan_handle)
+WHERE attribute = N'dbid') AS pa
+GROUP BY DatabaseID)
+SELECT ROW_NUMBER() OVER(ORDER BY [CPU_Time_Ms] DESC) AS [CPU Rank],
+[Database Name], [CPU_Time_Ms] AS [CPU Time (ms)],
+CAST([CPU_Time_Ms] * 1.0 / SUM([CPU_Time_Ms]) OVER() * 100.0 AS DECIMAL(5, 2)) AS [CPU Percent]
+FROM DB_CPU_Stats
+WHERE DatabaseID <> 32767 --ResourceDB
+ORDER BY [CPU Rank] OPTION (RECOMPILE);
+
+
+
+--Number of pages in buffer cache for each database
+SELECT databases.name AS "Database Name", COUNT(*)  AS "Pages Used"
+FROM sys.dm_os_buffer_descriptors
+INNER JOIN sys.databases
+ON databases.database_id = dm_os_buffer_descriptors.database_id
+GROUP BY databases.name
+ORDER BY COUNT(*) DESC;
+
+--Monitoring logical reads
+SELECT
+    max_logical_writes, total_logical_writes, last_logical_writes,
+    execution_count, QueryString
+FROM sys.dm_exec_query_stats 
+CROSS APPLY (SELECT SUBSTRING(text, statement_start_offset/2 + 1,
+        (CASE WHEN statement_end_offset = -1 
+            THEN LEN(CONVERT(nvarchar(MAX),text)) * 2 
+                ELSE statement_end_offset 
+            END - statement_start_offset)/2 + 1) AS QueryString
+     FROM sys.dm_exec_sql_text(sql_handle)
+    ) AS query_text
+WHERE QueryString LIKE '%MyOrder%'
+ORDER BY total_logical_writes DESC;
+
+--Table & View Buffer Cache Pages Summary
+
+SELECT objects.name AS "Object Name", objects.type_desc AS "Object Type",
+	COUNT(*) AS "Total Buffer Pages"
+FROM sys.dm_os_buffer_descriptors
+	INNER JOIN sys.allocation_units
+	ON allocation_units.allocation_unit_id = dm_os_buffer_descriptors.allocation_unit_id
+		INNER JOIN sys.partitions
+		ON ((allocation_units.container_id = partitions.hobt_id AND type IN (1,3))
+			OR (allocation_units.container_id = partitions.partition_id AND type IN (2)))
+			INNER JOIN sys.objects
+			ON partitions.object_id = objects.object_id
+WHERE allocation_units.type IN (1,2,3)
+AND objects.is_ms_shipped = 0
+AND dm_os_buffer_descriptors.database_id = DB_ID()
+GROUP BY objects.name, objects.type_desc
+ORDER BY COUNT(*) DESC;
+
+
+--Index pages in buffer cache
+SELECT indexes.name AS "Index Name", objects.name AS "Object Name",
+	objects.type_desc AS "Object Type", COUNT(*) AS "Total Cache Pages"
+FROM sys.dm_os_buffer_descriptors
+	INNER JOIN sys.allocation_units
+	ON allocation_units.allocation_unit_id = dm_os_buffer_descriptors.allocation_unit_id
+		INNER JOIN sys.partitions
+		ON ((allocation_units.container_id = partitions.hobt_id AND type IN (1,3))
+			OR (allocation_units.container_id = partitions.partition_id AND type IN (2)))
+			INNER JOIN sys.objects
+			ON partitions.object_id = objects.object_id
+				INNER JOIN sys.indexes
+				ON objects.object_id = indexes.object_id
+					AND partitions.index_id = indexes.index_id
+WHERE allocation_units.type IN (1,2,3)
+AND objects.is_ms_shipped = 0
+AND dm_os_buffer_descriptors.database_id = DB_ID()
+GROUP BY indexes.name, objects.name, objects.type_desc
+ORDER BY COUNT(*) DESC;

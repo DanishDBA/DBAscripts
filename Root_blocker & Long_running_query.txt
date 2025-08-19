@@ -1,0 +1,178 @@
+----------------------------------------------------To check  current running active session(whatisgoingon Script)-----------------------------------------------
+
+
+SELECT
+OBJECT_NAME(objectid) as ObjectName
+,SUBSTRING(stateText.text, (statement_start_offset/2)+1,
+((CASE statement_end_offset
+WHEN -1 THEN DATALENGTH(stateText.text)
+ELSE statement_end_offset
+END - statement_start_offset)/2) + 1) AS statement_text
+,DB_Name(database_id) as DatabaseName
+,req.cpu_time AS CPU_Time
+,sysp.physical_io
+,sysp.lastwaittype
+,DATEDIFF(minute, last_request_start_time, getdate()) AS RunningMinutes
+,req.Percent_Complete
+,sysp.cmd
+,sess.HOST_NAME as RunningFrom
+,LEFT(CLIENT_INTERFACE_NAME, 25) AS RunningBy
+,sess.session_id AS SessionID
+,req.blocking_session_id AS BlockingWith
+,req.reads
+,req.writes
+,sess.[program_name]
+,sess.login_name
+,sess.status
+,sess.last_request_start_time
+,sysp.login_time
+,sysp.last_batch
+,req.logical_reads
+
+FROM
+sys.dm_exec_requests req
+INNER JOIN sys.dm_exec_sessions sess ON sess.session_id = req.session_id
+AND sess.is_user_process = 1
+INNER JOIN sys.sysprocesses sysp ON sysp.spid=sess.session_id
+CROSS APPLY
+sys.dm_exec_sql_text(sysp.sql_handle) AS stateText
+--where DatabaseName = ''
+order  by RunningMinutes desc
+
+
+GO
+
+
+---------------------------------------Root Blocker query------------------------------------------------------------------------
+
+SET NOCOUNT ON
+GO
+SELECT SPID, BLOCKED, REPLACE (REPLACE (T.TEXT, CHAR(10), ' '), CHAR (13), ' ' ) AS BATCH
+INTO #T
+FROM sys.sysprocesses R CROSS APPLY sys.dm_exec_sql_text(R.SQL_HANDLE) T
+GO
+WITH BLOCKERS (SPID, BLOCKED, LEVEL, BATCH)
+AS
+(
+SELECT SPID,
+BLOCKED,
+CAST (REPLICATE ('0', 4-LEN (CAST (SPID AS VARCHAR))) + CAST (SPID AS VARCHAR) AS VARCHAR (1000)) AS LEVEL,
+BATCH FROM #T R
+WHERE (BLOCKED = 0 OR BLOCKED = SPID)
+AND EXISTS (SELECT * FROM #T R2 WHERE R2.BLOCKED = R.SPID AND R2.BLOCKED <> R2.SPID)
+UNION ALL
+SELECT R.SPID,
+R.BLOCKED,
+CAST (BLOCKERS.LEVEL + RIGHT (CAST ((1000 + R.SPID) AS VARCHAR (100)), 4) AS VARCHAR (1000)) AS LEVEL,
+R.BATCH FROM #T AS R
+INNER JOIN BLOCKERS ON R.BLOCKED = BLOCKERS.SPID WHERE R.BLOCKED > 0 AND R.BLOCKED <> R.SPID
+)
+SELECT N'    ' + REPLICATE (N'|         ', LEN (LEVEL)/4 - 1) +
+CASE WHEN (LEN(LEVEL)/4 - 1) = 0
+THEN 'HEAD -  '
+ELSE '|------  ' END
++ CAST (SPID AS NVARCHAR (10)) + N' ' + BATCH AS BLOCKING_TREE
+FROM BLOCKERS ORDER BY LEVEL ASC
+GO
+DROP TABLE #T
+GO
+
+
+----------------------------------------To check  current running active session-----------------------------------------------
+
+SELECT s.session_id,r.blocking_session_id 'blocked by'  
+,r.STATUS  
+,r.start_time as query_start_time  
+
+,Substring(st.TEXT, (r.statement_start_offset / 2) + 1, ((CASE r.statement_end_offset WHEN - 1 THEN Datalength(st.TEXT)ELSE r.statement_end_offset END - r.statement_start_offset) / 2) + 1) AS statement_text  
+,s.login_name,p.client_net_address ,s.host_name
+,r.wait_type,wait_resource,s.program_name  
+,Coalesce(Quotename(Db_name(st.dbid)) + N'.' + Quotename(Object_schema_name(st.objectid, st.dbid)) + N'.' + Quotename(Object_name(st.objectid, st.dbid)), '') AS command_text   
+,r.cpu_time,r.logical_reads  
+,r.total_elapsed_time / (1000.0) 'Elapsed Time (in Sec)'  
+,r.sql_handle,r.plan_handle  
+,r.command  
+,r.reads  
+,r.writes  
+,DB_NAME(r.database_id) AS DBName  
+,s.host_name  
+,s.login_time  
+,r.percent_complete  
+,s.host_process_id  
+,r.wait_time / (1000.0) 'Wait Time (in Sec)'  
+,r.open_transaction_count,qp.query_plan  
+FROM sys.dm_exec_sessions AS s  
+INNER JOIN sys.dm_exec_requests AS r ON r.session_id = s.session_id  
+INNER JOIN sys.dm_exec_connections p ON p.session_id = s.session_id  
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS st  
+CROSS APPLY sys.dm_exec_query_plan (r.plan_handle) qp  
+WHERE r.session_id != @@SPID  
+ORDER BY r.cpu_time DESC  
+,r.STATUS  
+,r.blocking_session_id  
+,s.session_id  
+  
+  
+  
+  
+  
+--------------------------------------------- To kill sleeping session---------------------------------------------------------------
+
+
+DECLARE @v_spid INT
+DECLARE c_Users CURSOR 
+   FAST_FORWARD FOR
+   SELECT SPID
+   FROM master..sysprocesses (NOLOCK)
+   WHERE spid>50 
+   AND status='sleeping' 
+   AND DATEDIFF(mi,last_batch,GETDATE())>=60
+   AND spid<>@@spid
+OPEN c_Users
+FETCH NEXT FROM c_Users INTO @v_spid
+WHILE (@@FETCH_STATUS=0)
+BEGIN
+  PRINT 'KILLing '+CONVERT(VARCHAR,@v_spid)+'...'
+  EXEC('KILL '+@v_spid) 
+  FETCH NEXT FROM c_Users INTO @v_spid
+END
+CLOSE c_Users
+DEALLOCATE c_Users  
+  
+  
+  
+  
+----------------------------------------------Datafile shrink script-------------------------------------------------------------------------
+
+SELECT
+a.FILEID AS file_id,
+    CONVERT(DECIMAL(12,2),ROUND(a.size/128.000,2)) AS [file_size_mb],
+    CONVERT(DECIMAL(12,2),ROUND(FILEPROPERTY(a.name,'SpaceUsed')/128.000,2)) AS [space_used_mb] ,
+    CONVERT(DECIMAL(12,2),ROUND((a.size-FILEPROPERTY(a.name,'SpaceUsed'))/128.000,2)) AS [free_space_mb],
+    a.NAME AS name,
+a.FILENAME AS physical_name
+FROM
+sys.sysfiles a
+
+
+
+declare @fsize int, @esize int, @fno int
+Set @esize = 493000.13--Provide the existing size of the file in MB 81920000 KB
+Set @fsize = 482848.81--Provide the final size of the file needed in MB
+Set @fno = 3 --Provide the file number that needs to be shrunk
+While (@fsize<= @esize)
+Begin
+
+Print 'DBCC SHRINKFILE ('+rtrim(cast(@fno as varchar(5)))+','+rtrim(cast(@esize as varchar(10)))+')'+Char(10)+'Go'
+Set @esize = @esize - 128
+
+End
+
+
+  
+  
+  
+  
+  
+  
+  

@@ -1,0 +1,80 @@
+
+/****** Object:  StoredProcedure [dbo].[Rebuildindex_Clover_Healthbuzz_ABHI]    Script Date: 13-07-2022 21:13:41 ******/
+SET ANSI_NULLS ON
+GO
+
+--SET QUOTED_IDENTIFIER ON
+--GO
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--CREATE  procedure [dbo].[Rebuildindex_sp]  
+--as        
+SET NOCOUNT ON;      
+DECLARE @objectid int;      
+DECLARE @indexid int;      
+DECLARE @partitioncount bigint;      
+DECLARE @schemaname nvarchar(130);       
+DECLARE @objectname nvarchar(130);       
+DECLARE @indexname nvarchar(130);       
+DECLARE @partitionnum bigint;      
+DECLARE @partitions bigint;      
+DECLARE @frag float;      
+DECLARE @command nvarchar(4000);  
+DECLARE @Index_Type_Desc nvarchar(130);        
+SELECT    
+    object_id AS objectid,      
+    index_id AS indexid,  
+      Index_Type_Desc,              
+    partition_number AS partitionnum,      
+    avg_fragmentation_in_percent AS frag      
+INTO #Temp_table_for_Rebuild_Index    
+FROM sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL , NULL, 'LIMITED')      
+WHERE avg_fragmentation_in_percent > 20.0 AND index_id > 0 AND page_count >=500;      
+DECLARE partitions CURSOR FOR SELECT * FROM #Temp_table_for_Rebuild_Index;      
+-- Open the cursor.      
+OPEN partitions;       
+-- Loop through the partitions.      
+WHILE (1=1)      
+    BEGIN;      
+        FETCH NEXT      
+           FROM partitions      
+           INTO @objectid, @indexid, @Index_Type_Desc, @partitionnum, @frag;      
+        IF @@FETCH_STATUS < 0 BREAK;      
+        SELECT @objectname = QUOTENAME(o.name), @schemaname = QUOTENAME(s.name)      
+        FROM sys.objects AS o      
+        JOIN sys.schemas as s ON s.schema_id = o.schema_id      
+        WHERE o.object_id = @objectid;      
+        SELECT @indexname = QUOTENAME(name)      
+        FROM sys.indexes      
+        WHERE  object_id = @objectid AND index_id = @indexid;      
+        SELECT @partitioncount = count(*)       
+        FROM sys.partitions      
+        WHERE object_id = @objectid AND index_id = @indexid;      
+-- 30 is an arbitrary decision point at which to switch between reorganizing and rebuilding.      
+   --     IF @frag < 30.0  --and @Index_Type_Desc <> 'XML'  
+   --        SET @command = N'ALTER INDEX ' + @indexname + N' ON ' + @schemaname + N'.' + @objectname + N' REORGANIZE';      
+   ----     Else  
+         --SET @command = N'ALTER INDEX ' + @indexname + N'r OFF ' + @schemaname + N'.' + @objectname + N' REORGANIZE';              
+        IF @frag >= 20.0   --and @Index_Type_Desc <> 'XML'    
+            SET @command = N'ALTER INDEX ' + @indexname + N' ON ' + @schemaname + N'.' + @objectname + N' REBUILD WITH ( PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON, ONLINE = On,FILLFACTOR = 80, SORT_IN_TEMPDB = ON,maxdop=4 )'+char(10)+'Go';   
+        --Else  
+        --   SET @command = N'ALTER INDEX ' + @indexname + N' OFF ' + @schemaname + N'.' + @objectname + N' REBUILD';   
+        --IF @partitioncount > 1      
+        --    SET @command = @command + N' PARTITION=' + CAST(@partitionnum AS nvarchar(10));      
+        --EXEC (@command);      
+        PRINT  @command;      
+    END;      
+-- Close and deallocate the cursor.      
+CLOSE partitions;      
+DEALLOCATE partitions;      
+-- Drop the temporary table.      
+DROP TABLE #Temp_table_for_Rebuild_Index;   
+SET NOCOUNT OFF  
+  
+
+
+
+GO
+
+

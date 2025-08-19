@@ -1,0 +1,576 @@
+select @@SERVERNAME
+go
+
+--select * from [db_size_for_admin] where snapdate>getdate()-1
+sp_helpdb
+go
+
+----==================== History/backup Tables---------------------------------------------
+---for single db 
+select DB_NAME(DB_ID()) as DBNAME,  t.NAME AS TableName,
+--    s.Name AS SchemaName,
+    p.rows AS RowCounts,
+  --  SUM(a.total_pages) * 8 AS TotalSpaceKB, 
+    CAST(ROUND(((SUM(a.total_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS TotalSpaceMB,
+   -- SUM(a.used_pages) * 8 AS UsedSpaceKB, 
+    CAST(ROUND(((SUM(a.used_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS UsedSpaceMB, 
+  --  (SUM(a.total_pages) - SUM(a.used_pages)) * 8 AS UnusedSpaceKB,
+    CAST(ROUND(((SUM(a.total_pages) - SUM(a.used_pages)) * 8) / 1024.00, 2) AS NUMERIC(36, 2)) AS UnusedSpaceMB,
+		t.create_date CreatedDate,
+	t.modify_date ModifiedDate
+FROM 
+    sys.tables t
+INNER JOIN      
+    sys.indexes i ON t.OBJECT_ID = i.object_id
+INNER JOIN 
+    sys.partitions p ON i.object_id = p.OBJECT_ID AND i.index_id = p.index_id
+INNER JOIN 
+    sys.allocation_units a ON p.partition_id = a.container_id
+LEFT OUTER JOIN 
+    sys.schemas s ON t.schema_id = s.schema_id
+WHERE 
+    (
+	t.name  like '%_2010%' or t.name  like '%_2011%' or t.name  like '%_2012%'
+	or t.name like '%_2013%' or t.name  like '%_2014%' or t.name  like '%_2015%' or t.name  like '%_2016%'
+	or t.name like '%2017%' or t.name like '%2018%' or t.name like '%2019%' or t.name like '%_2020%' or t.name like '%_2021%' 
+	or t.name like '%10%' or t.name like '%11%' or t.name like '%12%' or t.name like '%13%' or t.name like '%14%' or t.name like '%15%'
+	or t.name like '%16%' or t.name like '%17%' or t.name like '%18%' or t.name like '%19%' or t.name like '%20%' or t.name like '%21%'
+	or t.name  like '%_temp%' or t.name  like '%temp%' or t.name  like '%_tmp%' or t.name  like '%_old%' or t.name  like '%_bk%' or t.name  like 'bkp%'
+	or t.name  like '%_back%' or t.name  like 'back%' or t.name  like '%_backup%' or t.name  like 'backup%'
+	or t.name  like '%_hist%' or t.name  like 'hist%' or t.name  like '%_history%' or t.name  like 'history%'
+	)
+    AND t.is_ms_shipped = 0
+    AND i.OBJECT_ID > 255 
+
+GROUP BY 
+    t.Name, s.Name, p.Rows,t.create_date,t.modify_date
+ORDER BY 
+ TotalSpaceMB desc
+
+GO
+  
+ --=====UNUSED INDEX 
+ 
+ 
+declare @total numeric;
+select DB_NAME(DB_ID()) as DBNAME, object_name(s.[object_id]) as [object name], 
+       i.[name] as [index name], 
+	    CAST( 8 * SUM(a.used_pages)/1024.0 AS DECIMAL(20,1))AS 'Indexsize(MB)',
+       user_seeks, 
+       user_scans, 
+       user_lookups, 
+       user_updates,
+	   user_updates-(user_seeks+user_scans+user_lookups) as Diff,
+	 user_updates +user_seeks+user_scans+user_lookups as Total,
+	 cast(round((user_updates)*100.00 /(user_updates +user_seeks+user_scans+user_lookups),2,1) as decimal(18,2))   as UpdatePerc ,
+	 	 cast(round((user_seeks+user_scans+user_lookups)*100.00 /(user_updates +user_seeks+user_scans+user_lookups),2,1) as decimal(18,2))   as SeekPerc 
+	   
+from   sys.dm_db_index_usage_stats as s 
+inner join sys.indexes as i on i.[object_id] = s.[object_id] and i.index_id = s.index_id 
+inner join sys.partitions AS p ON p.OBJECT_ID = i.OBJECT_ID AND p.index_id = i.index_id
+INNER JOIN  sys.allocation_units a ON p.partition_id = a.container_id
+where  objectproperty(s.[object_id],'isusertable') = 1
+       and s.database_id = db_id()
+	   and s.user_updates > 0 
+	   --and s.user_seeks = 0 and s.user_scans = 0 and s.user_lookups = 0 
+	   and i.name<>'null' and i.is_disabled<>1 and i.is_primary_key<>1 and i.is_unique<>1
+group by s.object_id,i.name, user_seeks, user_scans,user_lookups, user_updates 
+--order by user_updates desc
+order by UpdatePerc desc
+ 
+ GO
+ 
+
+	
+-- Heap tables (Method 3) also provides row counts 
+
+
+	SELECT  @@ServerName AS Server ,
+	        DB_NAME() AS DBName ,
+	        OBJECT_SCHEMA_NAME(ddps.object_id) AS SchemaName ,
+	        OBJECT_NAME(ddps.object_id) AS TableName ,
+	        i.Type_Desc ,
+	        SUM(ddps.row_count) AS Rows
+	FROM    sys.dm_db_partition_stats AS ddps
+	        JOIN sys.indexes i ON i.object_id = ddps.object_id
+	                              AND i.index_id = ddps.index_id
+	WHERE   i.type_desc = 'HEAP'
+	        AND OBJECT_SCHEMA_NAME(ddps.object_id) <> 'sys'
+	GROUP BY ddps.object_id ,
+	        i.type_desc
+	ORDER BY SUM(ddps.row_count) desc; 
+	
+
+ ------==========FOREIGN KEY WITHOUT INDEX
+ 
+  select DB_NAME(DB_ID()) as DBNAME, 
+name,object_id,OBJECT_NAME(parent_object_id) TableName,
+type_desc,
+create_date,
+modify_date
+FROM    sys.foreign_keys fk
+WHERE   EXISTS
+        (
+        SELECT  *
+        FROM    sys.foreign_key_columns fkc
+        WHERE   fkc.constraint_object_id = fk.object_id
+                AND NOT EXISTS
+                (
+                SELECT  *
+                FROM    sys.index_columns ic
+                WHERE   ic.object_id = fkc.parent_object_id
+                        AND ic.column_id = fkc.parent_column_id
+                        AND ic.index_column_id = fkc.constraint_column_id
+                       
+                )
+        )
+	GO
+	
+
+---========DUPLICATE INDEX
+
+
+
+with IndexColumns AS(
+select distinct  schema_name (o.schema_id) as 'SchemaName',object_name(o.object_id) as TableName, i.Name as IndexName, o.object_id,i.index_id,i.type,
+(select case key_ordinal when 0 then NULL else '['+col_name(k.object_id,column_id) +']' end as [data()]
+from sys.index_columns  as k  (NOLOCK)
+where k.object_id = i.object_id
+and k.index_id = i.index_id
+order by key_ordinal, column_id
+for xml path('')) as cols,
+(select case key_ordinal when 0 then NULL else '['+col_name(k.object_id,column_id) +'] ' + CASE WHEN is_descending_key=1 THEN 'Desc' ELSE 'Asc' END end as [data()]
+from sys.index_columns   as k  (NOLOCK)
+where k.object_id = i.object_id
+and k.index_id = i.index_id
+order by key_ordinal, column_id
+for xml path('')) as colsWithSortOrder,
+case when i.index_id=1 then
+(select '['+name+']' as [data()]
+from sys.columns as c  (NOLOCK) 
+where c.object_id = i.object_id
+and c.column_id not in (select column_id from sys.index_columns   as kk  (NOLOCK)  where kk.object_id = i.object_id and kk.index_id = i.index_id)
+order by column_id for xml path(''))
+else
+(select '['+col_name(k.object_id,column_id) +']' as [data()]
+from sys.index_columns as k  (NOLOCK) 
+where k.object_id = i.object_id
+and k.index_id = i.index_id and is_included_column=1 and k.column_id not in (Select column_id from sys.index_columns kk where k.object_id=kk.object_id and kk.index_id=1)
+order by key_ordinal, column_id for xml path('')) end as inc
+from sys.indexes as i  (NOLOCK) 
+inner join sys.objects o  (NOLOCK) on i.object_id =o.object_id
+inner join sys.index_columns ic  (NOLOCK) on ic.object_id =i.object_id and ic.index_id =i.index_id
+inner join sys.columns c  (NOLOCK) on c.object_id = ic.object_id and c.column_id = ic.column_id
+where  o.type = 'U' and i.index_id <>0 and i.type <>3 and i.type <>5 and i.type <>6 and i.type <>7
+group by o.schema_id,o.object_id,i.object_id,i.Name,i.index_id,i.type
+), ResultTable AS
+(SELECT    ic1.SchemaName,ic1.TableName,ic1.IndexName,ic1.object_id, ic2.IndexName as RedundantIndexName, CASE WHEN ic1.index_id=1 THEN ic1.colsWithSortOrder + ' (Clustered)' WHEN ic1.inc = '' THEN ic1.colsWithSortOrder  WHEN ic1.inc is NULL THEN ic1.colsWithSortOrder ELSE ic1.colsWithSortOrder + ' INCLUDE ' + ic1.inc END as IndexCols,
+CASE WHEN ic2.index_id=1 THEN ic2.colsWithSortOrder + ' (Clustered)' WHEN ic2.inc = '' THEN ic2.colsWithSortOrder  WHEN ic2.inc is NULL THEN ic2.colsWithSortOrder ELSE ic2.colsWithSortOrder + ' INCLUDE ' + ic2.inc END as RedundantIndexCols, ic1.index_id
+,ic1.cols col1,ic2.cols col2
+from IndexColumns ic1 join IndexColumns ic2 on ic1.object_id = ic2.object_id
+and ic1.index_id <> ic2.index_id and not (ic1.colsWithSortOrder = ic2.colsWithSortOrder and ISNULL(ic1.inc,'') = ISNULL(ic2.inc,''))
+and not (ic1.index_id=1 AND ic1.cols = ic2.cols ) and ic1.cols like REPLACE (ic2.cols , '[','[[]') + '%'
+)
+SELECT SchemaName,TableName, IndexName, IndexCols, RedundantIndexName, RedundantIndexCols, object_id, index_id
+FROM ResultTable
+
+ORDER BY 1,2,3,5
+
+
+
+
+--=========== MISSING INDEX
+
+SELECT db.[name] AS [DatabaseName]
+    ,id.[object_id] AS [ObjectID]
+,OBJECT_NAME(id.[object_id], db.[database_id]) AS [ObjectName]
+    ,id.[statement] AS [FullyQualifiedObjectName]
+    ,id.[equality_columns] AS [EqualityColumns]
+    ,id.[inequality_columns] AS [InEqualityColumns]
+    ,id.[included_columns] AS [IncludedColumns]
+    ,gs.[unique_compiles] AS [UniqueCompiles]
+    ,gs.[user_seeks] AS [UserSeeks]
+    ,gs.[user_scans] AS [UserScans]
+    ,gs.[last_user_seek] AS [LastUserSeekTime]
+    ,gs.[last_user_scan] AS [LastUserScanTime]
+    ,gs.[avg_total_user_cost] AS [AvgTotalUserCost]  -- Average cost of the user queries that could be reduced by the index in the group.
+    ,gs.[avg_user_impact] AS [AvgUserImpact]  -- The value means that the query cost would on average drop by this percentage if this missing index group was implemented.
+    ,gs.[system_seeks] AS [SystemSeeks]
+    ,gs.[system_scans] AS [SystemScans]
+    ,gs.[last_system_seek] AS [LastSystemSeekTime]
+    ,gs.[last_system_scan] AS [LastSystemScanTime]
+    ,gs.[avg_total_system_cost] AS [AvgTotalSystemCost]
+    ,gs.[avg_system_impact] AS [AvgSystemImpact]  -- Average percentage benefit that system queries could experience if this missing index group was implemented.
+    ,gs.[user_seeks] * gs.[avg_total_user_cost] * (gs.[avg_user_impact] * 0.01) AS [IndexAdvantage]
+    ,'CREATE INDEX [IX_' + OBJECT_NAME(id.[object_id], db.[database_id]) + '_' + REPLACE(REPLACE(REPLACE(ISNULL(id.[equality_columns], ''), ', ', '_'), '[', ''), ']', '') + CASE
+        WHEN id.[equality_columns] IS NOT NULL
+            AND id.[inequality_columns] IS NOT NULL
+            THEN '_'
+        ELSE ''
+        END + REPLACE(REPLACE(REPLACE(ISNULL(id.[inequality_columns], ''), ', ', '_'), '[', ''), ']', '') + '_' + LEFT(CAST(NEWID() AS [nvarchar](64)), 5) + ']' + ' ON ' + id.[statement] + ' (' + ISNULL(id.[equality_columns], '') + CASE
+        WHEN id.[equality_columns] IS NOT NULL
+            AND id.[inequality_columns] IS NOT NULL
+            THEN ','
+        ELSE ''
+        END + ISNULL(id.[inequality_columns], '') + ')' + ISNULL(' INCLUDE (' + id.[included_columns] + ')', '') AS [ProposedIndex]
+    ,CAST(CURRENT_TIMESTAMP AS [smalldatetime]) AS [CollectionDate]
+FROM [sys].[dm_db_missing_index_group_stats] gs WITH (NOLOCK)
+INNER JOIN [sys].[dm_db_missing_index_groups] ig WITH (NOLOCK) ON gs.[group_handle] = ig.[index_group_handle]
+INNER JOIN [sys].[dm_db_missing_index_details] id WITH (NOLOCK) ON ig.[index_handle] = id.[index_handle]
+INNER JOIN [sys].[databases] db WITH (NOLOCK) ON db.[database_id] = id.[database_id]
+WHERE  db.[database_id] = DB_ID()
+--AND OBJECT_NAME(id.[object_id], db.[database_id]) = 'YourTableName'
+ORDER BY ObjectName, [IndexAdvantage] DESC
+OPTION (RECOMPILE);
+ 
+
+
+
+--SELECT TOP(25) db_name(db_id()) as DBNAME, OBJECT_NAME(objectid) AS [ObjectName], 
+--cp.objtype, cp.usecounts, cp.size_in_bytes, query_plan
+--FROM sys.dm_exec_cached_plans AS cp WITH (NOLOCK)
+--CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) AS qp
+--WHERE CAST(query_plan AS NVARCHAR(MAX)) LIKE N'%MissingIndex%'
+--AND dbid = DB_ID()
+--ORDER BY cp.usecounts DESC OPTION (RECOMPILE);
+
+
+
+
+--=============TOP TABLES 
+
+
+
+SELECT  DB_NAME() DBNAME,
+s.Name AS SchemaName,
+t.Name AS TableName,
+p.rows AS RowCounts,
+CAST(ROUND((SUM(a.total_pages) / 128.00), 2) AS NUMERIC(36, 2)) AS Total_MB,
+CAST(ROUND((SUM(a.used_pages) / 128.00), 2) AS NUMERIC(36, 2)) AS Used_MB,
+CAST(ROUND((SUM(a.total_pages) - SUM(a.used_pages)) / 128.00, 2) AS NUMERIC(36, 2)) AS Unused_MB
+FROM sys.tables t
+INNER JOIN sys.indexes i ON t.OBJECT_ID = i.object_id
+INNER JOIN sys.partitions p ON i.object_id = p.OBJECT_ID AND i.index_id = p.index_id
+INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+GROUP BY t.Name, s.Name, p.Rows
+ORDER BY p.rows desc
+GO
+
+
+----====  FREE SPACE
+
+
+
+SELECT
+ DB_NAME() DBNAME,SUBSTRING(a.FILENAME, 1, 1) Drive,
+ [FILE_SIZE_MB] = convert(decimal(12,2),
+round(a.size/128.000,2)),
+ [SPACE_USED_MB] = convert(decimal(12,2),
+round(fileproperty(a.name,'SpaceUsed')/128.000,2)),
+ [FREE_SPACE_MB] = convert(decimal(12,2),
+round((a.size-fileproperty(a.name,'SpaceUsed'))/128.000,2)) ,
+ [FREE_SPACE_%] = convert(decimal(12,2),
+(convert(decimal(12,2),round((a.size-fileproperty(a.name,'SpaceUsed'))/128.000,2)) 
+/ convert(decimal(12,2),round(a.size/128.000,2)) * 100)),
+ a.NAME, a.FILENAME
+FROM dbo.sysfiles a
+ORDER BY Drive, [Name]
+
+----Total no of index per table 
+
+SELECT [schema_name] = s.name, table_name = o.name,
+MAX(i1.type_desc) ClusteredIndexorHeap,
+MAX(COALESCE(I2.NCIC,0)) NoOfNonClusteredIndex,
+p.rows
+FROM sys.indexes i 
+RIGHT JOIN sys.objects o ON i.[object_id] = o.[object_id]
+INNER JOIN sys.schemas s ON o.[schema_id] = s.[schema_id]
+LEFT JOIN sys.partitions p ON p.object_id = o.object_id AND p.index_id IN (0,1)
+LEFT JOIN sys.indexes i1 ON i.object_id = i1.object_id AND i1.type IN (0,1)
+LEFT JOIN (SELECT object_id,COUNT(index_id) NCIC
+FROM sys.indexes
+WHERE type = 2
+GROUP BY object_id) I2
+ON i.object_id = I2.object_id
+WHERE o.type IN ('U')
+GROUP BY s.name, o.name, p.rows
+ORDER BY NoOfNonClusteredIndex desc
+
+
+-----=================INDEX LEVEL DETAILS FOR SPECIFIC TABLE----------
+
+
+declare @SchemaName sysname
+,@TableName sysname
+,@IndexName sysname
+,@dataspace sysname
+
+select @TableName='folderperms'
+BEGIN
+SET NOCOUNT ON
+declare @_SchemaName varchar(100)
+declare @_TableName varchar(256)
+declare @_IndexName varchar(256)
+declare @ColumnName varchar(256)
+declare @is_unique varchar(100)
+declare @IndexTypeDesc varchar(100)
+declare @FileGroupName varchar(100)
+declare @is_disabled varchar(100)
+declare @IndexColumnId int
+declare @IsDescendingKey int 
+declare @IsIncludedColumn int
+
+-- getting the index sizes
+SELECT schema_name(t.schema_id) [SchemaName],
+ OBJECT_NAME(ix.OBJECT_ID) AS TableName,
+ ix.name AS IndexName,
+CAST( 8 * SUM(a.used_pages)/1024.0 AS DECIMAL(20,1))AS 'Indexsize(MB)'
+INTO  #IndexSizeTable
+from sys.tables t 
+inner join sys.indexes ix on t.object_id=ix.object_id
+inner join sys.partitions AS p ON p.OBJECT_ID = ix.OBJECT_ID AND p.index_id = ix.index_id
+inner join sys.allocation_units AS a ON a.container_id = p.partition_id
+ WHERE ix.type>0 and t.is_ms_shipped=0  
+ and schema_name(t.schema_id)= isnull(@SchemaName,schema_name(t.schema_id)) and t.name=isnull(@TableName,t.name) AND ix.name=isnull(@IndexName, ix.name)
+ GROUP BY schema_name(t.schema_id), ix.OBJECT_ID,ix.name
+ ORDER BY OBJECT_NAME(ix.OBJECT_ID),ix.name
+
+ --getting important properties of indexes
+select schema_name(t.schema_id) [SchemaName], t.name TableName, ix.name IndexName,
+cast( '' as varchar(max)) AS IndexKeys, casT('' as varchar(max)) AS IncludedColumns,
+    ix.is_unique
+ , ix.type_desc,  ix.fill_factor as [Fill_Factor]
+ , ix.is_disabled ,  da.name as data_space,
+  ix.is_padded,
+     ix.allow_page_locks,
+  ix.allow_row_locks,
+  INDEXPROPERTY(t.object_id, ix.name, 'IsAutoStatistics') IsAutoStatistics ,
+  ix.ignore_dup_key 
+ INTO #helpindex
+ from sys.tables t 
+ inner join sys.indexes ix on t.object_id=ix.object_id
+ inner join sys.data_spaces da on da.data_space_id= ix.data_space_id
+ where ix.type>0 and t.is_ms_shipped=0  
+ and schema_name(t.schema_id)= isnull(@SchemaName,schema_name(t.schema_id)) and t.name=isnull(@TableName,t.name) AND ix.name=isnull(@IndexName, ix.name)
+ and da.name=isnull(@dataspace,da.name) 
+ order by schema_name(t.schema_id), t.name, ix.name
+
+---getting the index keys and included columns
+declare CursorIndex cursor for
+ select schema_name(t.schema_id) [schema_name], t.name, ix.name
+    from sys.tables t 
+ inner join sys.indexes ix on t.object_id=ix.object_id
+ where ix.type>0 and t.is_ms_shipped=0 
+ and schema_name(t.schema_id)= isnull(@SchemaName,schema_name(t.schema_id)) and t.name=isnull(@TableName,t.name) AND ix.name=isnull(@IndexName, ix.name) 
+ order by schema_name(t.schema_id), t.name, ix.name
+open CursorIndex
+fetch next from CursorIndex into  @_SchemaName, @_TableName, @_IndexName
+while (@@fetch_status=0)
+begin
+ declare @IndexColumns varchar(4000)
+ declare @IncludedColumns varchar(4000)
+ set @IndexColumns=''
+ set @IncludedColumns=''
+ declare CursorIndexColumn cursor for 
+  select col.name, ixc.is_descending_key, ixc.is_included_column
+  from sys.tables tb 
+  inner join sys.indexes ix on tb.object_id=ix.object_id
+  inner join sys.index_columns ixc on ix.object_id=ixc.object_id and ix.index_id= ixc.index_id
+  inner join sys.columns col on ixc.object_id =col.object_id  and ixc.column_id=col.column_id
+  where ix.type>0 and tb.is_ms_shipped=0 
+  and schema_name(tb.schema_id)=@_SchemaName and tb.name=@_TableName and ix.name=@_IndexName
+  order by ixc.index_column_id
+
+ open CursorIndexColumn 
+ fetch next from CursorIndexColumn into  @ColumnName, @IsDescendingKey, @IsIncludedColumn
+ while (@@fetch_status=0)
+ begin
+  if @IsIncludedColumn=0 
+    set @IndexColumns=@IndexColumns + @ColumnName +', ' 
+  else 
+   set @IncludedColumns=@IncludedColumns  + @ColumnName  +', ' 
+     
+  fetch next from CursorIndexColumn into @ColumnName, @IsDescendingKey, @IsIncludedColumn
+ end
+ close CursorIndexColumn
+ deallocate CursorIndexColumn
+
+ set @IndexColumns = substring(@IndexColumns, 1, len(@IndexColumns)-1)
+ set @IncludedColumns = case when len(@IncludedColumns) >0 then substring(@IncludedColumns, 1, len(@IncludedColumns)-1) else '' end
+
+    UPDATE #helpindex 
+ SET IndexKeys = @IndexColumns, IncludedColumns=@IncludedColumns
+ WHERE [SchemaName]=@_SchemaName and TableName=@_TableName and IndexName=@_IndexName
+ 
+fetch next from CursorIndex into  @_SchemaName, @_TableName, @_IndexName
+
+end
+close CursorIndex
+deallocate CursorIndex
+
+--showing the results
+SELECT DB_NAME() DBNAME, hi.SchemaName, hi.TableName, hi.IndexName, hi.IndexKeys, hi.IncludedColumns, ixs.[Indexsize(MB)],
+hi.is_unique, hi.type_desc,hi.data_space, hi.Fill_Factor, hi.IsAutoStatistics,
+hi.is_disabled, hi.is_padded, hi.allow_page_locks, hi.allow_row_locks,hi.ignore_dup_key
+ FROM #helpindex hi
+INNER JOIN #IndexSizeTable ixs ON  hi.SchemaName=ixs.SchemaName and hi.TableName=ixs.TableName and hi.IndexName=ixs.IndexName
+order by hi.SchemaName, hi.TableName, hi.IndexKeys, hi.IncludedColumns
+
+drop table #helpindex
+drop table #IndexSizeTable
+
+set nocount off
+end
+
+
+
+
+--===== Heap tables (Method 1) 
+	SELECT  @@Servername AS ServerName ,
+	        DB_NAME() AS DBName ,
+	        t.Name AS HeapTable ,
+	        t.Create_Date
+	FROM    sys.tables t
+	        INNER JOIN sys.indexes i ON t.object_id = i.object_id
+	                                    AND i.type_desc = 'HEAP'
+	ORDER BY t.Name 
+	--OR 
+	-- Heap tables (Method 2) 
+	SELECT  @@Servername AS ServerName ,
+	        DB_NAME() AS DBName ,
+	        t.Name AS HeapTable ,
+	        t.Create_Date
+	FROM    sys.tables t
+	WHERE   OBJECTPROPERTY(OBJECT_ID, 'TableHasClustIndex') = 0
+	ORDER BY t.Name; 
+	--OR 
+	
+	
+	
+	
+	---Memory Check
+	
+	
+	CREATE TABLE #Memory_BPool (  
+BPool_Committed_MB VARCHAR(50),  
+BPool_Commit_Tgt_MB VARCHAR(50),  
+BPool_Visible_MB VARCHAR(50));  
+  
+/****  
+-- SQL server 2012 / 2014 / 2016  
+INSERT INTO #Memory_BPool   
+SELECT  
+      (committed_kb)/1024.0 as BPool_Committed_MB,  
+      (committed_target_kb)/1024.0 as BPool_Commit_Tgt_MB,  
+      (visible_target_kb)/1024.0 as BPool_Visible_MB  
+FROM  sys.dm_os_sys_info;  
+****/  
+CREATE TABLE #Memory_sys (  
+total_physical_memory_mb VARCHAR(50),  
+available_physical_memory_mb VARCHAR(50),  
+total_page_file_mb VARCHAR(50),  
+available_page_file_mb VARCHAR(50),  
+Percentage_Used VARCHAR(50),  
+system_memory_state_desc VARCHAR(50));  
+  
+INSERT INTO #Memory_sys  
+select  
+      total_physical_memory_kb/1024 AS total_physical_memory_mb,  
+      available_physical_memory_kb/1024 AS available_physical_memory_mb,  
+      total_page_file_kb/1024 AS total_page_file_mb,  
+      available_page_file_kb/1024 AS available_page_file_mb,  
+      100 - (100 * CAST(available_physical_memory_kb AS DECIMAL(18,3))/CAST(total_physical_memory_kb AS DECIMAL(18,3)))   
+      AS 'Percentage_Used',  
+      system_memory_state_desc  
+from  sys.dm_os_sys_memory;  
+  
+  
+CREATE TABLE #Memory_process(  
+physical_memory_in_use_GB VARCHAR(50),  
+locked_page_allocations_GB VARCHAR(50),  
+virtual_address_space_committed_GB VARCHAR(50),  
+available_commit_limit_GB VARCHAR(50),  
+page_fault_count VARCHAR(50))  
+  
+INSERT INTO #Memory_process  
+select  
+      physical_memory_in_use_kb/1048576.0 AS 'physical_memory_in_use(GB)',  
+      locked_page_allocations_kb/1048576.0 AS 'locked_page_allocations(GB)',  
+      virtual_address_space_committed_kb/1048576.0 AS 'virtual_address_space_committed(GB)',  
+      available_commit_limit_kb/1048576.0 AS 'available_commit_limit(GB)',  
+      page_fault_count as 'page_fault_count'  
+from  sys.dm_os_process_memory;  
+  
+  
+CREATE TABLE #Memory(  
+Parameter VARCHAR(200),  
+Value VARCHAR(100));  
+  
+INSERT INTO #Memory   
+SELECT 'BPool_Committed_MB',BPool_Committed_MB FROM #Memory_BPool  
+UNION  
+SELECT 'BPool_Commit_Tgt_MB', BPool_Commit_Tgt_MB FROM #Memory_BPool  
+UNION   
+SELECT 'BPool_Visible_MB', BPool_Visible_MB FROM #Memory_BPool  
+UNION  
+SELECT 'total_physical_memory_mb',total_physical_memory_mb FROM #Memory_sys  
+UNION  
+SELECT 'available_physical_memory_mb',available_physical_memory_mb FROM #Memory_sys  
+UNION  
+SELECT 'total_page_file_mb',total_page_file_mb FROM #Memory_sys  
+UNION  
+SELECT 'available_page_file_mb',available_page_file_mb FROM #Memory_sys  
+UNION  
+SELECT 'Percentage_Used',Percentage_Used FROM #Memory_sys  
+UNION  
+SELECT 'system_memory_state_desc',system_memory_state_desc FROM #Memory_sys  
+UNION  
+SELECT 'physical_memory_in_use_GB',physical_memory_in_use_GB FROM #Memory_process  
+UNION  
+SELECT 'locked_page_allocations_GB',locked_page_allocations_GB FROM #Memory_process  
+UNION  
+SELECT 'virtual_address_space_committed_GB',virtual_address_space_committed_GB FROM #Memory_process  
+UNION  
+SELECT 'available_commit_limit_GB',available_commit_limit_GB FROM #Memory_process  
+UNION  
+SELECT 'page_fault_count',page_fault_count FROM #Memory_process;  
+
+
+
+select * from #Memory   
+
+---Drive space 
+
+SELECT DISTINCT DB_NAME(volumes.database_id) DBName,--volumes.logical_volume_name AS LogicalName,  
+	volumes.volume_mount_point AS Drive,
+	CAST(CAST(available_bytes AS FLOAT)/ CAST(total_bytes AS FLOAT) AS DECIMAL(18,2)) * 100 AS [Space Free %] ,
+    CONVERT(INT,volumes.available_bytes/1024/1024/1024) AS FreeSpaceGB,
+    CONVERT(INT,volumes.total_bytes/1024/1024/1024) AS TotalSpaceGB,
+    --CONVERT(INT,volumes.total_bytes/1024/1024/1024) - CONVERT(INT,volumes.available_bytes/1024/1024/1024) AS OccupiedSpaceGB,
+	mf.physical_name PhysicalFileLocation
+FROM sys.master_files mf
+CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.FILE_ID) volumes
+order by drive 
+
+
+<style> 
+table, th, td { 
+    border: 1px solid black; 
+    border-collapse: collapse; 
+} 
+th, td { 
+    padding: 10px; 
+    text-align: left; 
+} 
+</style> 
+
+
+SELECT 
+cast (connectionproperty('local_net_address')  AS nvarchar(20)) IPAddress,
+@@servername ServerName,
+DB_NAME(dbid) DBNAME,
+COUNT(dbid) as NumberOfConnections
+FROM sys.sysprocesses
+WHERE status not in ('background','sleeping') and dbid not in (1,2,3,4,5,6)
+GROUP BY [dbid];
