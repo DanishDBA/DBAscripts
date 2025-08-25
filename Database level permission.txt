@@ -1,0 +1,98 @@
+/*
+Database-Level Permission Audit – SQL Server 2016
+Checks DB users, roles, permissions, and orphaned status
+*/
+
+IF OBJECT_ID('tempdb..#DbPerms') IS NOT NULL DROP TABLE #DbPerms;
+
+CREATE TABLE #DbPerms
+(
+    DatabaseName sysname,
+    DBUser sysname,
+    DBRole sysname NULL,
+    PermissionState NVARCHAR(60) NULL,
+    PermissionName NVARCHAR(128) NULL,
+    LoginName sysname NULL,
+    OrphanFlag BIT NULL
+);
+
+DECLARE @sql NVARCHAR(MAX) = N'';
+DECLARE @db NVARCHAR(128);
+
+DECLARE db_cursor CURSOR FOR
+SELECT name 
+FROM sys.databases
+WHERE database_id > 4   -- skip system dbs
+  AND state = 0;        -- only online
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @db;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = '
+    INSERT INTO #DbPerms
+        (DatabaseName, DBUser, DBRole, PermissionState, PermissionName, LoginName, OrphanFlag)
+    SELECT  
+        ''' + @db + ''' AS DatabaseName,
+        dp.name AS DBUser,
+        drp.name AS DBRole,
+        dpperm.state_desc AS PermissionState,
+        dpperm.permission_name AS PermissionName,
+        sp.name AS LoginName,
+        CASE 
+            WHEN sp.sid IS NULL THEN 1
+            WHEN dp.sid <> sp.sid THEN 1
+            ELSE 0
+        END AS OrphanFlag
+    FROM ' + QUOTENAME(@db) + '.sys.database_principals dp
+    LEFT JOIN ' + QUOTENAME(@db) + '.sys.database_role_members drm
+           ON dp.principal_id = drm.member_principal_id
+    LEFT JOIN ' + QUOTENAME(@db) + '.sys.database_principals drp
+           ON drm.role_principal_id = drp.principal_id
+    LEFT JOIN ' + QUOTENAME(@db) + '.sys.database_permissions dpperm
+           ON dp.principal_id = dpperm.grantee_principal_id
+    LEFT JOIN sys.server_principals sp
+           ON dp.sid = sp.sid
+    WHERE dp.type IN (''S'',''U'',''G'')
+      AND dp.principal_id > 4; -- skip system users
+    ';
+    EXEC (@sql);
+
+    FETCH NEXT FROM db_cursor INTO @db;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- 🔹 Final Detailed Report
+SELECT 
+    p.LoginName AS [Login Name],
+    CASE sp.type
+        WHEN 'S' THEN 'SQL Login'
+        WHEN 'U' THEN 'Windows Login'
+        WHEN 'G' THEN 'Windows Group'
+        ELSE sp.type_desc
+    END AS [Login Type],
+    CASE sp.is_disabled WHEN 1 THEN 'Disabled' ELSE 'Enabled' END AS [Status],
+    p.DatabaseName AS [Database],
+    p.DBUser AS [DB User],
+    p.DBRole AS [DB Role],
+    --p.PermissionState,
+    --p.PermissionName,
+    CASE p.OrphanFlag WHEN 1 THEN 'YES' ELSE 'NO' END AS [Is Orphaned],
+    CONVERT(VARCHAR(19), sp.create_date, 120) AS [Created On],
+    CONVERT(VARCHAR(19), sp.modify_date, 120) AS [Modified On]
+FROM #DbPerms AS p
+LEFT JOIN sys.server_principals AS sp
+       ON p.LoginName = sp.name
+ORDER BY [Database], [DB User], [DB Role];
+
+-- 🔹 Summary per DB
+SELECT p.DatabaseName,
+       COUNT(DISTINCT p.DBUser) AS TotalUsers,
+       SUM(CASE WHEN p.OrphanFlag = 1 THEN 1 ELSE 0 END) AS OrphanedUsers
+FROM #DbPerms AS p
+GROUP BY p.DatabaseName;
+
+

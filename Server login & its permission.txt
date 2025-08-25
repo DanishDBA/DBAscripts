@@ -1,0 +1,92 @@
+SELECT 
+    sp.name AS LoginName,
+    sp.type_desc AS LoginType,
+    sp.default_database_name AS DefaultDatabase,
+    --sp.default_language_name AS DefaultLanguage,
+
+    sp.create_date AS CreateDate,
+    sp.modify_date AS ModifyDate,
+    sp.is_disabled AS IsDisabled
+,case when sp.is_disabled = 1 then 'Disabled'
+else 'Enabled' end as [Logins status],
+CASE B.SYSADMIN  WHEN '1' THEN 'YES' ELSE 'NO' END AS SYSADMIN,
+CASE B.SECURITYADMIN WHEN '1' THEN 'YES' ELSE 'NO' END AS SECURITYADMIN,
+CASE B.SETUPADMIN  WHEN '1' THEN 'YES' ELSE 'NO' END AS SETUPADMIN,
+CASE B.PROCESSADMIN  WHEN '1' THEN 'YES' ELSE 'NO' END AS PROCESSADMIN,
+CASE B.DISKADMIN  WHEN '1' THEN 'YES' ELSE 'NO' END AS DISKADMIN,
+CASE B.DBCREATOR  WHEN '1' THEN 'YES' ELSE 'NO' END AS DBCREATOR,
+CASE B.BULKADMIN  WHEN '1' THEN 'YES' ELSE 'NO' END AS BULKADMIN
+--,B.DBNAME AS [DEFAULT_DBNAME]
+--,Coalesce(cast(SL.is_expiration_checked as varchar(100)),'Windows Login') As [is_expiration_checked],
+,Coalesce(cast(SL.is_policy_checked as varchar(100)),'Windows Login') As [is_policy_checked]
+    --,ISNULL(STUFF((
+    --    SELECT ', ' + sp2.name
+    --    FROM sys.server_role_members AS srm
+    --    JOIN sys.server_principals AS sp2 ON srm.role_principal_id = sp2.principal_id
+    --    WHERE srm.member_principal_id = sp.principal_id
+    --    FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''), 'public') AS ServerRole
+FROM 
+    sys.server_principals AS sp left join master.sys.sql_logins AS SL
+on sp.name = SL.name RIGHT JOIN MASTER..SYSLOGINS B ON sp.name=B.NAME
+
+WHERE 
+    sp.type IN ('S', 'U', 'G') -- S = SQL Login, U = Windows Login, G = Windows Group
+		and sp.name not like '##%' and sp.name not like 'NT %'
+ORDER BY 
+    sp.name;
+
+
+--------------Below queries to find other explicit server level permission
+
+
+
+-- Step 0: Prep
+IF OBJECT_ID('tempdb..#ServerPerms') IS NOT NULL DROP TABLE #ServerPerms;
+
+CREATE TABLE #ServerPerms
+(
+    LoginName sysname,
+    PermissionState NVARCHAR(60),
+    PermissionName NVARCHAR(128),
+    ObjectName NVARCHAR(256) NULL
+);
+
+INSERT INTO #ServerPerms(LoginName, PermissionState, PermissionName, ObjectName)
+SELECT  
+    sp.name AS LoginName,
+    perm.state_desc,
+    perm.permission_name,
+    COALESCE(o.name, 'SERVER') AS ObjectName
+FROM sys.server_permissions perm
+INNER JOIN sys.server_principals sp
+        ON perm.grantee_principal_id = sp.principal_id
+LEFT JOIN sys.all_objects o
+        ON perm.major_id = o.object_id
+WHERE sp.type IN ('S','U','G')   -- SQL, Windows Login, Windows Group
+  AND sp.principal_id > 4;       -- skip system logins
+
+-- Final Report
+SELECT 
+    sp.name AS [Login Name],
+    CASE sp.type
+        WHEN 'S' THEN 'SQL Login'
+        WHEN 'U' THEN 'Windows Login'
+        WHEN 'G' THEN 'Windows Group'
+        ELSE sp.type_desc
+    END AS [Login Type],
+    CASE sp.is_disabled WHEN 1 THEN 'Disabled' ELSE 'Enabled' END AS [Status],
+    sp.default_database_name AS [Default DB],
+    perm.PermissionState,
+    perm.PermissionName,
+    perm.ObjectName,
+    CONVERT(VARCHAR(19), sp.create_date, 120) AS [Created On],
+    CONVERT(VARCHAR(19), sp.modify_date, 120) AS [Modified On]
+FROM #ServerPerms perm
+INNER JOIN sys.server_principals sp
+        ON perm.LoginName = sp.name
+		where  sp.name not like '##%' and sp.name not like 'NT %'
+ORDER BY [Login Name], [PermissionName];
+
+
+
+	

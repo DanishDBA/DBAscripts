@@ -1,0 +1,124 @@
+-------------------------------------------------------------------------------------All logins mapped to server & databases
+-- Step 0: Prep
+IF OBJECT_ID('tempdb..#DbMappings') IS NOT NULL DROP TABLE #DbMappings;
+IF OBJECT_ID('tempdb..#ServerRoles') IS NOT NULL DROP TABLE #ServerRoles;
+
+CREATE TABLE #DbMappings
+(
+    LoginName sysname,
+    DatabaseName sysname,
+    DatabaseUser sysname NULL,
+    DatabaseRole sysname NULL
+);
+
+CREATE TABLE #ServerRoles
+(
+    LoginName sysname,
+    ServerRole sysname
+);
+
+-- Step 1: Collect database mappings
+DECLARE @sql NVARCHAR(MAX) = N'';
+DECLARE @db NVARCHAR(128);
+
+DECLARE db_cursor CURSOR FOR
+SELECT name
+FROM sys.databases
+--WHERE database_id > 4   -- skip system DBs
+--  AND state = 0;        -- only online
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @db;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = @sql + '
+    INSERT INTO #DbMappings(LoginName, DatabaseName, DatabaseUser, DatabaseRole)
+    SELECT  
+        sp.name AS LoginName,
+        ''' + @db + ''' AS DatabaseName,
+        dp.name AS DatabaseUser,
+        drp.name AS DatabaseRole
+    FROM ' + QUOTENAME(@db) + '.sys.database_principals dp
+    INNER JOIN sys.server_principals sp
+           ON sp.sid = dp.sid
+    LEFT JOIN ' + QUOTENAME(@db) + '.sys.database_role_members drm
+           ON dp.principal_id = drm.member_principal_id
+    LEFT JOIN ' + QUOTENAME(@db) + '.sys.database_principals drp
+           ON drm.role_principal_id = drp.principal_id
+    WHERE --dp.principal_id > 4 -- skip system users AND
+       sp.type IN (''S'',''U'',''G'');
+    ';
+    FETCH NEXT FROM db_cursor INTO @db;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+EXEC sp_executesql @sql;
+
+-- Step 2: Collect server roles
+INSERT INTO #ServerRoles(LoginName, ServerRole)
+SELECT sp.name, srp.name
+FROM sys.server_principals sp
+INNER JOIN sys.server_role_members srm
+       ON sp.principal_id = srm.member_principal_id
+INNER JOIN sys.server_principals srp
+       ON srm.role_principal_id = srp.principal_id
+WHERE sp.type IN ('S','U','G');
+
+-- Step 3: Final Report
+SELECT  
+    sp.name AS [Login Name],
+    CASE sp.type
+        WHEN 'S' THEN 'SQL Login'
+        WHEN 'U' THEN 'Windows Login'
+        WHEN 'G' THEN 'Windows Group'
+        ELSE sp.type_desc
+    END AS [Login Type],
+    CASE sp.is_disabled WHEN 1 THEN 'Disabled' ELSE 'Enabled' END AS [Status],
+    sp.default_database_name AS [Default DB],
+    sr.ServerRole AS [Server Role],
+    dm.DatabaseName AS [Database],
+    dm.DatabaseUser AS [DB User],
+    dm.DatabaseRole AS [DB Role],
+	CONVERT(VARCHAR(19), sp.create_date, 120) AS [Created On],
+    CONVERT(VARCHAR(19), sp.modify_date, 120) AS [Modified On]
+FROM sys.server_principals sp
+LEFT JOIN #ServerRoles sr
+       ON sp.name = sr.LoginName
+LEFT JOIN #DbMappings dm
+       ON sp.name = dm.LoginName
+WHERE sp.type IN ('S','U','G') 
+and sp.name not like  '##MS%' and sp.name not like 'NT %'
+
+UNION ALL
+
+-- Rule 3: Logins with no server role and no DB mapping
+SELECT  
+    sp.name AS [Login Name],
+    CASE sp.type
+        WHEN 'S' THEN 'SQL Login'
+        WHEN 'U' THEN 'Windows Login'
+        WHEN 'G' THEN 'Windows Group'
+        ELSE sp.type_desc
+    END AS [Login Type],
+    CASE sp.is_disabled WHEN 1 THEN 'Disabled' ELSE 'Enabled' END AS [Status],
+    sp.default_database_name AS [Default DB],
+    NULL AS [Server Role],
+    'No DB Mapped' AS [Database],
+    NULL AS [DB User],
+    NULL AS [DB Role],
+	CONVERT(VARCHAR(19), sp.create_date, 120) AS [Created On],
+    CONVERT(VARCHAR(19), sp.modify_date, 120) AS [Modified On]
+FROM sys.server_principals sp
+WHERE sp.type IN ('S','U','G')
+  AND NOT EXISTS (SELECT 1 FROM #ServerRoles r WHERE r.LoginName = sp.name)
+  AND NOT EXISTS (SELECT 1 FROM #DbMappings d WHERE d.LoginName = sp.name)
+  and sp.name not like  '##MS%' and sp.name not like 'NT %'
+
+ORDER BY [Login Name], [Server Role], [Database];
+
+
+
+
