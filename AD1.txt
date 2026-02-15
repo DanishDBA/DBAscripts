@@ -1,0 +1,117 @@
+# ======================================================
+# CONFIGURATION
+# ======================================================
+
+$Server = "Node2"
+
+# ======================================================
+# SQL CONNECTION (Windows Authentication)
+# ======================================================
+
+$ConnectionString = "Server=$Server;Database=master;Integrated Security=True"
+
+$Connection = New-Object System.Data.SqlClient.SqlConnection
+$Connection.ConnectionString = $ConnectionString
+$Connection.Open()
+
+# ======================================================
+# QUERY – GET WINDOWS LOGINS WITH SID
+# ======================================================
+
+$Query = @"
+SELECT 
+    sp.name AS LoginName,
+    sp.sid,
+    sp.type_desc,
+    sp.is_disabled,
+    sp.create_date
+FROM sys.server_principals sp
+WHERE sp.type_desc IN ('WINDOWS_LOGIN','WINDOWS_GROUP')
+  AND sp.name NOT LIKE 'NT AUTHORITY%'
+  AND sp.name NOT LIKE 'NT SERVICE%'
+ORDER BY sp.name
+"@
+
+$Command = $Connection.CreateCommand()
+$Command.CommandText = $Query
+$Reader = $Command.ExecuteReader()
+
+$Results = @()
+
+while ($Reader.Read()) {
+
+    $LoginName   = $Reader["LoginName"]
+    $SqlSIDBytes = $Reader["sid"]
+    $IsDisabled  = $Reader["is_disabled"]
+    $CreatedDate = $Reader["create_date"]
+
+    $DisplayName = ""
+    $Email       = ""
+    $ADEnabled   = ""
+    $LastLogon   = ""
+    $AccountType = ""
+
+    # Convert SQL SID (byte array) to string SID format
+    try {
+        $SidObject = New-Object System.Security.Principal.SecurityIdentifier($SqlSIDBytes,0)
+        $StringSID = $SidObject.Value
+    }
+    catch {
+        $StringSID = $null
+    }
+
+    # ======================================================
+    # SID-BASED AD LOOKUP
+    # ======================================================
+
+    if ($StringSID) {
+        try {
+            $ADUser = Get-ADUser -Filter "ObjectSID -eq '$StringSID'" `
+                                 -Properties DisplayName,EmailAddress,Enabled,LastLogonDate `
+                                 -ErrorAction Stop
+
+            if ($ADUser) {
+                $DisplayName = $ADUser.DisplayName
+                $Email       = $ADUser.EmailAddress
+                $ADEnabled   = $ADUser.Enabled
+                $LastLogon   = $ADUser.LastLogonDate
+                $AccountType = "Active Directory"
+            }
+            else {
+                $DisplayName = "Local Account"
+                $AccountType = "Local"
+            }
+        }
+        catch {
+            $DisplayName = "Local or Not Found in AD"
+            $AccountType = "Local"
+        }
+    }
+    else {
+        $DisplayName = "Invalid SID"
+        $AccountType = "Unknown"
+    }
+
+    # Add result object
+    $Results += [PSCustomObject]@{
+        LoginName     = $LoginName
+        AccountType   = $AccountType
+        DisplayName   = $DisplayName
+        Email         = $Email
+        AD_Enabled    = $ADEnabled
+        AD_LastLogon  = $LastLogon
+        SQL_Disabled  = $IsDisabled
+        CreatedDate   = $CreatedDate
+        SID           = $StringSID
+    }
+}
+
+# Close SQL connection
+$Reader.Close()
+$Connection.Close()
+
+# ======================================================
+# DISPLAY OUTPUT
+# ======================================================
+
+$Results | Format-Table -AutoSize
